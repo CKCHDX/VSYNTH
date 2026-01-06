@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Voice Reference Analyzer - Analyze and profile Cyclops WAV files
 Extracts voice characteristics for cloning reference
@@ -6,6 +7,7 @@ Extracts voice characteristics for cloning reference
 
 import json
 import logging
+import sys
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
@@ -16,13 +18,18 @@ import soundfile as sf
 from scipy.signal import spectrogram
 from scipy.fftpack import fft
 
+# Fix Windows console encoding
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('logs/voice_reference.log')
+        logging.FileHandler('logs/voice_reference.log', encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -68,13 +75,12 @@ class VoiceReferenceAnalyzer:
             logger.info(f"Analyzing: {wav_path.name} ({duration:.2f}s @ {sr}Hz)")
             
             # Extract characteristics
-            # RMS Energy (loudness)
-            S = librosa.feature.melspectrogram(y=audio, sr=sr)
-            rms = librosa.feature.rms(S=S)[0]
-            rms_mean = np.mean(rms)
+            # RMS Energy (loudness) - direct calculation
+            rms = np.sqrt(np.mean(audio ** 2))
+            rms_mean = float(rms)
             
             # Loudness in dB
-            loudness_db = librosa.power_to_db(rms_mean ** 2, ref=1.0)
+            loudness_db = 20 * np.log10(rms + 1e-10)
             
             # Spectral Centroid (brightness)
             spectral_centroid = librosa.feature.spectral_centroid(y=audio, sr=sr)[0]
@@ -85,17 +91,37 @@ class VoiceReferenceAnalyzer:
             zcr_mean = np.mean(zcr)
             
             # MFCC (Mel-Frequency Cepstral Coefficients) - voice timbre
-            mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
+            # Fixed: Use proper hop_length and n_fft for melspectrogram
+            n_fft = 2048
+            hop_length = 512
+            n_mels = 128
+            
+            mfcc = librosa.feature.mfcc(
+                y=audio, 
+                sr=sr, 
+                n_mfcc=13,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                n_mels=n_mels
+            )
             mfcc_mean = np.mean(mfcc, axis=1).tolist()
             
             # Pitch estimation (fundamental frequency)
-            pitch, mag = librosa.piptrack(y=audio, sr=sr)
+            pitch, mag = librosa.piptrack(
+                y=audio, 
+                sr=sr,
+                n_fft=n_fft,
+                hop_length=hop_length
+            )
+            
             # Get mean and range of detected pitch
             pitch_values = []
             for t in range(pitch.shape[1]):
-                index = np.argmax(pitch[:, t])
-                if pitch[index, t] > 0:
-                    pitch_values.append(index * sr / (2 * len(pitch)))
+                index = np.argmax(mag[:, t])
+                if mag[index, t] > 0:
+                    freq = pitch[index, t]
+                    if freq > 0:  # Valid pitch
+                        pitch_values.append(freq)
             
             pitch_mean = np.mean(pitch_values) if pitch_values else None
             pitch_range = (min(pitch_values), max(pitch_values)) if pitch_values else None
@@ -114,11 +140,13 @@ class VoiceReferenceAnalyzer:
                 loudness_db=float(loudness_db)
             )
             
-            logger.debug(f"✓ Extracted characteristics for {wav_path.name}")
+            logger.info(f"[OK] Extracted characteristics for {wav_path.name}")
             return char
             
         except Exception as e:
-            logger.error(f"✗ Error analyzing {wav_path.name}: {e}")
+            logger.error(f"[ERROR] Error analyzing {wav_path.name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def analyze_all(self) -> Dict[str, VoiceCharacteristics]:
@@ -202,16 +230,16 @@ class VoiceReferenceAnalyzer:
             chars_dict[filename] = asdict(char)
         
         chars_file = output_path / "cyclops_characteristics.json"
-        with open(chars_file, 'w') as f:
+        with open(chars_file, 'w', encoding='utf-8') as f:
             json.dump(chars_dict, f, indent=2)
-        logger.info(f"✓ Saved characteristics: {chars_file}")
+        logger.info(f"[OK] Saved characteristics: {chars_file}")
         
         # Save aggregate profile
         profile = self.get_reference_profile()
         profile_file = output_path / "cyclops_profile.json"
-        with open(profile_file, 'w') as f:
+        with open(profile_file, 'w', encoding='utf-8') as f:
             json.dump(profile, f, indent=2)
-        logger.info(f"✓ Saved profile: {profile_file}")
+        logger.info(f"[OK] Saved profile: {profile_file}")
         
         return chars_file, profile_file
     
@@ -282,11 +310,13 @@ def main():
         # Print report
         analyzer.print_report()
         
-        print(f"\n✓ Analysis complete!")
+        print(f"\n[OK] Analysis complete!")
         print(f"  Characteristics: {chars_file}")
         print(f"  Profile: {profile_file}")
     else:
         logger.error("Failed to analyze any files")
+        print("\n[ERROR] No files were successfully analyzed.")
+        print("Check logs/voice_reference.log for details.")
         sys.exit(1)
 
 
